@@ -1,29 +1,54 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"flight-cache-lifecycle-manager/config"
+	"flight-cache-lifecycle-manager/openSearch"
 	"flight-cache-lifecycle-manager/redisService"
-	"github.com/aws/aws-lambda-go/lambda"
+	"flight-cache-lifecycle-manager/service"
+	"fmt"
 	redisV8 "github.com/go-redis/redis/v8"
 	"github.com/magiconair/properties"
+	"github.com/opensearch-project/opensearch-go"
 	"log"
+	"net/http"
 	"strings"
 )
 
 var (
-	redisClient           *redisV8.Client
-	flightCacheProperties *properties.Properties
+	redisClient                  *redisV8.Client
+	flightCacheManagerProperties *properties.Properties
+	openSearchClient             *opensearch.Client
+	cacheManager                 service.CacheManagerImpl
+	dbManager                    service.DbManagerImpl
 )
 
 func init() {
-	flightCacheProperties = config.LoadProperties()
-	redisClient = getRedisClient(flightCacheProperties)
+	flightCacheManagerProperties = config.LoadProperties()
+	redisClient = getRedisClient(flightCacheManagerProperties)
+	openSearchClient, _ = getOpenSearchClient(flightCacheManagerProperties)
+	openSearch.OpenSearchClientType = openSearch.RealOpenSearchClient{}
 	redisService.RedisClientType = redisService.RealRedisClient{}
+
+	cacheManager = service.CacheManagerImpl{
+		Client:     redisClient,
+		ClientType: redisService.RedisClientType,
+	}
+
+	dbManager = service.DbManagerImpl{
+		OSClient:     openSearchClient,
+		OSClientType: openSearch.OpenSearchClientType,
+	}
 }
 
 func main() {
-	lambda.Start(HandleRequest)
+	k, err := dbManager.ManageEntries(flightCacheManagerProperties)
+	if err != nil {
+		log.Println(err)
+	}
+	fmt.Println(k)
+	//lambda.Start(HandleRequest)
 }
 
 func HandleRequest(input interface{}) (interface{}, error) {
@@ -40,14 +65,6 @@ func HandleRequest(input interface{}) (interface{}, error) {
 	if !containsHeader {
 		log.Println("calling lambda for request ", inputRequestAsString)
 
-		redisClientType := redisService.RedisClientType
-		response, err := redisClientType.LifeCycleManager(redisClient)
-		if err != nil {
-			return err.Error(), err
-		} else {
-			log.Println("Response Body", response)
-			return response, err
-		}
 	}
 	return "Nothing Executed", err
 }
@@ -59,4 +76,21 @@ func getRedisClient(p *properties.Properties) *redisV8.Client {
 		Password: "",
 		DB:       0,
 	})
+}
+
+func getOpenSearchClient(p *properties.Properties) (*opensearch.Client, error) {
+
+	openSearchURL, _ := p.Get("openSearch-endpoint-URL")
+	openSearchUsername, _ := p.Get("openSearch-Username")
+	openSearchPassword, _ := p.Get("openSearch-Password")
+	client, err := opensearch.NewClient(opensearch.Config{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		Addresses: []string{openSearchURL},
+		Username:  openSearchUsername,
+		Password:  openSearchPassword,
+	})
+
+	return client, err
 }
