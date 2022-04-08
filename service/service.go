@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"flight-cache-lifecycle-manager/models"
 	"flight-cache-lifecycle-manager/openSearch"
 	"flight-cache-lifecycle-manager/redisService"
@@ -16,7 +17,7 @@ import (
 )
 
 type ManagerService interface {
-	ManageEntries(*properties.Properties) ([]string, error)
+	ManageEntries(*properties.Properties, chan<- string, chan<- error)
 }
 
 type DbManagerImpl struct {
@@ -29,9 +30,9 @@ type CacheManagerImpl struct {
 	ClientType redisService.RedisClient
 }
 
-func checkIfKeyHasExpired(key *string, timestamp time.Time, prop *properties.Properties) (bool, error) {
+func checkIfKeyIsValidBasedOnConfig(key *string, timestamp time.Time, prop *properties.Properties) (bool, error) {
 	var (
-		isKeyExpired bool
+		isKeyValid bool
 	)
 	splitsKey := strings.Split(*key, "-")
 	if len(splitsKey) > 3 {
@@ -46,69 +47,209 @@ func checkIfKeyHasExpired(key *string, timestamp time.Time, prop *properties.Pro
 
 			ttl := time.Duration(intConv) * time.Minute
 
-			isKeyExpired = checkForKeysDeletion(timestamp, ttl)
-		} else {
-			log.Println("No config found for this key:", *key)
-			log.Println("Checking for the deletion of keys with past departure dates")
-			isKeyExpired = checkIfKeyHasPastDeptDate(*key)
+			isKeyValid = checkForValidKeyBasedOnCurrentTime(timestamp, ttl)
 		}
 	}
 
-	return isKeyExpired, nil
+	return isKeyValid, nil
 }
 
-func (db *DbManagerImpl) ManageEntries(prop *properties.Properties) ([]string, error) {
-	var (
-		keysTobeDeleted []string
-	)
+func checkIfKeyIsValidBasedOnOfferValidity(id *string, combinations *[]models.Combination, prop *properties.Properties, dbType string) ([]string, error) {
 
-	m, err := db.OSClientType.GetAllKeysFromOS(db.OSClient)
+	//updateStringForValidField := "ctx._source.combinations[2].additionalParams.isValid= params.valid"
+	var updateString []string
+	var err error
 
-	if err != nil {
-		log.Println(err)
-	} else {
-		for key, timestamp := range m {
-			if len(key) < models.MIN_KEY_LENGTH {
-				log.Println("Invalid Key to be deleted: ", key)
-				keysTobeDeleted = append(keysTobeDeleted, key)
+	for i, combination := range *combinations {
+		value := combination.AdditionalParams["offerValidity"]
+		if len(value) != 0 {
+			fmt.Println("found the offer with offerValidity")
+			valueTimeConverted, err := convertDate(value)
+			if err != nil {
+				log.Println(err.Error())
 			} else {
-				isKeyExpired, err := checkIfKeyHasExpired(&key, timestamp, prop)
-				if isKeyExpired && err == nil {
-					log.Println("Key to be deleted: ", key)
-					keysTobeDeleted = append(keysTobeDeleted, key)
+
+				check := checkForValidKeyBasedOnCurrentTime(valueTimeConverted, 0)
+
+				//for redis
+				if dbType == "redis" {
+					validityUpdateForCacheBasedOnKey(check, &combination)
+				} else if dbType == "openSearch" {
+					updateString = append(updateString, stringAppenderForValidity(i, check))
+				} else {
+					log.Println("None of the db matches ")
+				}
+
+			}
+		} else {
+			fmt.Println("found the offer without offerValidity")
+			//update time stamp
+			var timeStamp string
+			timeStamp = combination.AdditionalParams["updatedTimeStamp"]
+			if len(timeStamp) == 0 {
+				timeStamp = combination.AdditionalParams["insertionTimeStamp"]
+			}
+			ts, err := convertDate(timeStamp)
+
+			if len(timeStamp) != 0 {
+				if err != nil {
+					log.Println(err.Error())
+				} else {
+					check, err := checkIfKeyIsValidBasedOnConfig(id, ts, prop)
+					if err != nil {
+						log.Println(err.Error())
+					} else {
+						if dbType == "redis" {
+							validityUpdateForCacheBasedOnKey(check, &combination)
+						} else if dbType == "openSearch" {
+							updateString = append(updateString, stringAppenderForValidity(i, check))
+						} else {
+							log.Println("None of the db matches ")
+						}
+					}
 				}
 			}
 		}
 	}
 
+	//call update in es with id,string
+	return updateString, err
+}
+
+func stringAppenderForValidity(i int, check bool) string {
+	if check {
+		return models.OpenSearchUpdateStringCombinations + strconv.Itoa(i) + models.OpenSearchUpdateStringAdditionalParam + "valid"
+	} else {
+		return models.OpenSearchUpdateStringCombinations + strconv.Itoa(i) + models.OpenSearchUpdateStringAdditionalParam + "notValid"
+	}
+}
+
+func (db *DbManagerImpl) ManageEntries(prop *properties.Properties, response chan<- string, resError chan<- error) {
+	var (
+		keysTobeDeleted []string
+	)
+
+	osResponse, err := db.OSClientType.GetResponseFromOS(db.OSClient)
+
+	if err != nil {
+		log.Println(err)
+	} else {
+
+		for _, hit := range osResponse.Hits.Hits {
+
+			if len(hit.ID) < models.MIN_KEY_LENGTH {
+				log.Println("Invalid Key to be deleted: ", hit.ID)
+				keysTobeDeleted = append(keysTobeDeleted, hit.ID)
+			} else if checkIfKeyHasPastDeptDate(hit.ID) {
+				keysTobeDeleted = append(keysTobeDeleted, hit.ID)
+			} else {
+
+				str, err := checkIfKeyIsValidBasedOnOfferValidity(&hit.ID, &hit.Source.Combinations, prop, "openSearch")
+
+				if err != nil {
+					log.Println(err.Error())
+				} else {
+					if len(str) > 0 {
+						updateString := strings.Join(str, ";")
+						db.OSClientType.UpdateValidityBasedOnOfferValidity(db.OSClient, hit.ID, updateString)
+					}
+				}
+
+			}
+
+		}
+	}
 	if len(keysTobeDeleted) > 0 {
 		statusCode, err := db.OSClientType.DeleteEntry(keysTobeDeleted, db.OSClient)
 		if err != nil {
 			log.Println(err)
 		}
-		log.Println(statusCode)
+		log.Println(statusCode, ": Status code for deleted entries")
 	}
 
-	return keysTobeDeleted, err
+	response <- "Managed entries in Database"
+	resError <- err
 }
 
-func checkForKeysDeletion(t time.Time, y time.Duration) bool {
+func validityUpdateForCacheBasedOnKey(check bool, com *models.Combination) {
+
+	if check {
+		com.AdditionalParams["isValid"] = "true"
+	} else {
+		com.AdditionalParams["isValid"] = "false"
+	}
+}
+
+func checkForValidKeyBasedOnCurrentTime(t time.Time, y time.Duration) bool {
 	x := t.Add(y)
 	timeNow := time.Now().UTC()
 
-	b := x.Before(timeNow)
+	b := x.After(timeNow)
 	fmt.Println(b)
 
 	return b
 }
 
-func (cache *CacheManagerImpl) ManageEntries(prop *properties.Properties) ([]string, error) {
+func (cache *CacheManagerImpl) ManageEntries(prop *properties.Properties, response chan<- string, resError chan<- error) {
+
+	var keysToBeDeleted []string
+	var err error
+	//var fResult  *models.Result
+	var ce *models.CacheEntry
 	keys := cache.ClientType.GetAllKeys(cache.Client)
 
-	keysToBeDeleted, err := deletionBasedOnDepDate(keys)
+	for _, key := range keys {
+		//var fResult  *models.Result
+		if checkIfKeyHasPastDeptDate(key) {
+			keysToBeDeleted = append(keysToBeDeleted, key)
+		} else {
+			cacheEntry, err := cache.ClientType.Query(key, cache.Client)
+
+			if err != nil {
+				log.Println(err.Error())
+			} else {
+				res, err := loadResultFromCache(cacheEntry.Value)
+
+				if err != nil {
+					log.Println(err.Error())
+				} else {
+					_, err := checkIfKeyIsValidBasedOnOfferValidity(&key, &res.Combinations, prop, "redis")
+
+					var finalRes *models.Result
+
+					finalRes = &models.Result{
+						Routes:           res.Routes,
+						Segments:         res.Segments,
+						Combinations:     res.Combinations,
+						Ancillaries:      res.Ancillaries,
+						AdditionalParams: res.AdditionalParams,
+					}
+					resInBytes, err := json.Marshal(&finalRes)
+
+					ce = &models.CacheEntry{
+						Key:   cacheEntry.Key,
+						Value: string(resInBytes),
+					}
+
+					err = cache.ClientType.AddEntry(ce, cache.Client, 0)
+
+					if err != nil {
+						log.Println(err.Error())
+					}
+				}
+
+			}
+
+		}
+
+		//call redis to update the key
+
+	}
+
 	r := cache.ClientType.LifeCycleManager(keysToBeDeleted, cache.Client)
 	fmt.Println(r)
-	return keysToBeDeleted, err
+	response <- "Managed entries in Cache"
+	resError <- err
 }
 
 func checkIfKeyHasPastDeptDate(key string) bool {
@@ -184,13 +325,28 @@ func deletionBasedOnDepDate(keys []string) ([]string, error) {
 	return keysToBeDeleted, err
 }
 
-func convertDate(date string) (time.Time, error) {
+func convertDate(d string) (time.Time, error) {
+
 	layout := "2006-01-02"
-	t, err := time.Parse(layout, date)
+	if strings.Contains(d, "T") {
+		layout = "2006-01-02T15:04:05.000Z"
+	}
+	t, err := time.Parse(layout, d)
 
 	if err != nil {
 		log.Println(err)
 	}
 
 	return t, err
+}
+
+func loadResultFromCache(cacheValue string) (*models.Result, error) {
+	var result *models.Result
+	err := json.Unmarshal([]byte(cacheValue), &result)
+	if err != nil {
+		log.Println("Unable to unmarshal string response to tfm response ", err.Error())
+	}
+
+	return result, err
+
 }

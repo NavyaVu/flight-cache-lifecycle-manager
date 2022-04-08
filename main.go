@@ -8,6 +8,7 @@ import (
 	"flight-cache-lifecycle-manager/redisService"
 	"flight-cache-lifecycle-manager/service"
 	"fmt"
+	"github.com/aws/aws-lambda-go/lambda"
 	redisV8 "github.com/go-redis/redis/v8"
 	"github.com/magiconair/properties"
 	"github.com/opensearch-project/opensearch-go"
@@ -43,12 +44,8 @@ func init() {
 }
 
 func main() {
-	k, err := dbManager.ManageEntries(flightCacheManagerProperties)
-	if err != nil {
-		log.Println(err)
-	}
-	fmt.Println(k)
-	//lambda.Start(HandleRequest)
+
+	lambda.Start(HandleRequest)
 }
 
 func HandleRequest(input interface{}) (interface{}, error) {
@@ -65,12 +62,30 @@ func HandleRequest(input interface{}) (interface{}, error) {
 	if !containsHeader {
 		log.Println("calling lambda for request ", inputRequestAsString)
 
+		var (
+			resFormCache      = make(chan string)
+			resErrorFormCache = make(chan error)
+			resFormDb         = make(chan string)
+			resErrorFormDb    = make(chan error)
+		)
+		go dbManager.ManageEntries(flightCacheManagerProperties, resFormCache, resErrorFormCache)
+		if resErrorFormCache != nil {
+			log.Println(resErrorFormCache)
+		}
+		go cacheManager.ManageEntries(flightCacheManagerProperties, resFormDb, resErrorFormDb)
+		if resErrorFormDb != nil {
+			log.Println(resErrorFormDb)
+		}
+		fmt.Println(<-resFormCache)
+		fmt.Println(<-resFormDb)
+
 	}
 	return "Nothing Executed", err
 }
 
 func getRedisClient(p *properties.Properties) *redisV8.Client {
 	redisAddr, _ := p.Get("redis-addr-port-AWS")
+	redisAddr = "localhost:6379"
 	return redisV8.NewClient(&redisV8.Options{
 		Addr:     redisAddr,
 		Password: "",

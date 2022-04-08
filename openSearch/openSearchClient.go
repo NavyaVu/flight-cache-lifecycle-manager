@@ -11,14 +11,14 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 )
 
 var OpenSearchClientType OpenSearchClient
 
 type OpenSearchClient interface {
 	DeleteEntry([]string, *opensearch.Client) (int, error)
-	GetAllKeysFromOS(*opensearch.Client) (map[string]time.Time, error)
+	GetResponseFromOS(*opensearch.Client) (*models.OpenSearchResponse, error)
+	UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string)
 }
 
 type RealOpenSearchClient struct {
@@ -44,6 +44,7 @@ func (osClient RealOpenSearchClient) DeleteEntry(keys []string, client *opensear
 			},
 		},
 	}
+
 	indexName = append(indexName, models.IndexName)
 
 	if err := json.NewEncoder(&buf).Encode(query); err != nil {
@@ -66,14 +67,13 @@ func (osClient RealOpenSearchClient) DeleteEntry(keys []string, client *opensear
 	return res.StatusCode, nil
 }
 
-func (osClient RealOpenSearchClient) GetAllKeysFromOS(client *opensearch.Client) (map[string]time.Time, error) {
+func (osClient RealOpenSearchClient) GetResponseFromOS(client *opensearch.Client) (*models.OpenSearchResponse, error) {
 
 	//query for match all to get the id's
 
 	var (
 		indexName          []string
 		openSearchResponse models.OpenSearchResponse
-		kT                 = make(map[string]time.Time)
 	)
 	indexName = append(indexName, models.IndexName)
 
@@ -99,9 +99,38 @@ func (osClient RealOpenSearchClient) GetAllKeysFromOS(client *opensearch.Client)
 		log.Fatalf("Error encoding query: %s", err)
 	}
 
-	for _, hit := range openSearchResponse.Hits.Hits {
-		kT[hit.ID] = hit.Source.TimeStamp
+	return &openSearchResponse, err
+}
+
+func (osClient RealOpenSearchClient) UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string) {
+
+	var buf bytes.Buffer
+
+	script := map[string]interface{}{
+		"script": map[string]interface{}{
+			"source": body,
+			"lang":   "painless",
+			"params": map[string]string{
+				"valid":    "true",
+				"notValid": "false",
+			},
+		},
 	}
 
-	return kT, err
+	if err := json.NewEncoder(&buf).Encode(script); err != nil {
+		log.Fatalf("Error encoding query: %s", err)
+	}
+
+	y := opensearchapi.UpdateRequest{
+		Index:      models.IndexName,
+		DocumentID: id,
+		Body:       &buf,
+	}
+
+	res, err := y.Do(context.Background(), client)
+
+	if err != nil {
+		log.Println(err.Error())
+	}
+	fmt.Println(res.StatusCode, "Status code for Key: ", id)
 }

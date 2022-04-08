@@ -1,6 +1,9 @@
 package models
 
-import "time"
+type CacheEntry struct {
+	Key   string
+	Value string
+}
 
 type OpenSearchResponse struct {
 	Took     int  `json:"took"`
@@ -27,14 +30,12 @@ type OpenSearchResponse struct {
 	} `json:"hits"`
 }
 
-//TODO add time stamp prop
 type Result struct {
 	Routes           map[string]Route   `json:"routes"`
 	Segments         map[string]Segment `json:"segments"`
 	Combinations     []Combination      `json:"combinations"`
 	Ancillaries      []Ancillary        `json:"ancillaries"`
 	AdditionalParams map[string]string  `json:"additionalParams,omitempty"`
-	TimeStamp        time.Time          `json:"timestamp"`
 }
 
 type Route struct {
