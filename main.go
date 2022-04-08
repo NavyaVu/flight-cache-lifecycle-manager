@@ -7,8 +7,6 @@ import (
 	"flight-cache-lifecycle-manager/openSearch"
 	"flight-cache-lifecycle-manager/redisService"
 	"flight-cache-lifecycle-manager/service"
-	"fmt"
-	"github.com/aws/aws-lambda-go/lambda"
 	redisV8 "github.com/go-redis/redis/v8"
 	"github.com/magiconair/properties"
 	"github.com/opensearch-project/opensearch-go"
@@ -45,7 +43,24 @@ func init() {
 
 func main() {
 
-	lambda.Start(HandleRequest)
+	var (
+		resFormCache      = make(chan string)
+		resErrorFormCache = make(chan error)
+		resFormDb         = make(chan string)
+		resErrorFormDb    = make(chan error)
+	)
+	go dbManager.ManageEntries(flightCacheManagerProperties, resFormCache, resErrorFormCache)
+	if resErrorFormCache != nil {
+		log.Println(resErrorFormCache)
+	}
+	go cacheManager.ManageEntries(flightCacheManagerProperties, resFormDb, resErrorFormDb)
+	if resErrorFormDb != nil {
+		log.Println(resErrorFormDb)
+	}
+	log.Println(<-resFormCache)
+	log.Println(<-resFormDb)
+
+	//lambda.Start(HandleRequest)
 }
 
 func HandleRequest(input interface{}) (interface{}, error) {
@@ -76,8 +91,8 @@ func HandleRequest(input interface{}) (interface{}, error) {
 		if resErrorFormDb != nil {
 			log.Println(resErrorFormDb)
 		}
-		fmt.Println(<-resFormCache)
-		fmt.Println(<-resFormDb)
+		log.Println(<-resFormCache)
+		log.Println(<-resFormDb)
 
 	}
 	return "Nothing Executed", err

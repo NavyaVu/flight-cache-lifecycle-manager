@@ -2,7 +2,6 @@ package redisService
 
 import (
 	"flight-cache-lifecycle-manager/models"
-	"fmt"
 	redisV8 "github.com/go-redis/redis/v8"
 	"golang.org/x/net/context"
 	"log"
@@ -32,14 +31,14 @@ func (redisClient RealRedisClient) LifeCycleManager(keysToBeDeleted []string, cl
 		return "Keys deleted"
 	}
 
-	return "Nothing is deleted as all the keys have departure date after today's date or the Redis is empty"
+	return "Nothing is deleted as all the keys have departure date after today's date"
 
 }
 
 func (redisClient RealRedisClient) Query(CacheEntryKey string, client *redisV8.Client) (*models.CacheEntry, error) {
 	val, err := client.Get(context.Background(), CacheEntryKey).Result()
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
 
 	return &models.CacheEntry{

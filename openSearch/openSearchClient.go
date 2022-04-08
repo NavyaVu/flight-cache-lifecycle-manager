@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"flight-cache-lifecycle-manager/models"
-	"fmt"
 	"github.com/opensearch-project/opensearch-go"
 	"github.com/opensearch-project/opensearch-go/opensearchapi"
 	"log"
@@ -18,7 +17,7 @@ var OpenSearchClientType OpenSearchClient
 type OpenSearchClient interface {
 	DeleteEntry([]string, *opensearch.Client) (int, error)
 	GetResponseFromOS(*opensearch.Client) (*models.OpenSearchResponse, error)
-	UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string)
+	UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string) int
 }
 
 type RealOpenSearchClient struct {
@@ -59,10 +58,10 @@ func (osClient RealOpenSearchClient) DeleteEntry(keys []string, client *opensear
 
 	res, err := deleteReq.Do(context.Background(), client)
 	if err != nil {
-		fmt.Println("failed to delete the document ", err)
+		log.Println("failed to delete the document ", err)
 		os.Exit(1)
 	}
-	fmt.Println(res)
+	log.Println(res)
 
 	return res.StatusCode, nil
 }
@@ -93,7 +92,7 @@ func (osClient RealOpenSearchClient) GetResponseFromOS(client *opensearch.Client
 	if err != nil {
 		log.Println("Error", err)
 	}
-	fmt.Println("Response during Search:", res.Status())
+	log.Println("Response during Search:", res.Status())
 
 	if err := json.NewDecoder(res.Body).Decode(&openSearchResponse); err != nil {
 		log.Fatalf("Error encoding query: %s", err)
@@ -102,7 +101,7 @@ func (osClient RealOpenSearchClient) GetResponseFromOS(client *opensearch.Client
 	return &openSearchResponse, err
 }
 
-func (osClient RealOpenSearchClient) UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string) {
+func (osClient RealOpenSearchClient) UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string) int {
 
 	var buf bytes.Buffer
 
@@ -132,5 +131,7 @@ func (osClient RealOpenSearchClient) UpdateValidityBasedOnOfferValidity(client *
 	if err != nil {
 		log.Println(err.Error())
 	}
-	fmt.Println(res.StatusCode, "Status code for Key: ", id)
+	log.Println(res.StatusCode, "Status code for Key: ", id)
+
+	return res.StatusCode
 }

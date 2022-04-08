@@ -41,8 +41,9 @@ func (osMock MockOpenSearchClient) GetResponseFromOS(*opensearch.Client) (*model
 	return openSearchResponse, nil
 }
 
-func (osMock MockOpenSearchClient) UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string) {
+func (osMock MockOpenSearchClient) UpdateValidityBasedOnOfferValidity(client *opensearch.Client, id string, body string) int {
 	log.Println("in mock to Update Validity Based On Offer Validity")
+	return 200
 }
 
 type MockRedisClient struct {

@@ -63,7 +63,7 @@ func checkIfKeyIsValidBasedOnOfferValidity(id *string, combinations *[]models.Co
 	for i, combination := range *combinations {
 		value := combination.AdditionalParams["offerValidity"]
 		if len(value) != 0 {
-			fmt.Println("found the offer with offerValidity")
+			log.Println("found the offer with offerValidity")
 			valueTimeConverted, err := convertDate(value)
 			if err != nil {
 				log.Println(err.Error())
@@ -82,7 +82,7 @@ func checkIfKeyIsValidBasedOnOfferValidity(id *string, combinations *[]models.Co
 
 			}
 		} else {
-			fmt.Println("found the offer without offerValidity")
+			log.Println("found the offer without offerValidity")
 			//update time stamp
 			var timeStamp string
 			timeStamp = combination.AdditionalParams["updatedTimeStamp"]
@@ -126,7 +126,8 @@ func stringAppenderForValidity(i int, check bool) string {
 
 func (db *DbManagerImpl) ManageEntries(prop *properties.Properties, response chan<- string, resError chan<- error) {
 	var (
-		keysTobeDeleted []string
+		keysTobeDeleted   []string
+		updatedStatusCode int
 	)
 
 	osResponse, err := db.OSClientType.GetResponseFromOS(db.OSClient)
@@ -151,7 +152,7 @@ func (db *DbManagerImpl) ManageEntries(prop *properties.Properties, response cha
 				} else {
 					if len(str) > 0 {
 						updateString := strings.Join(str, ";")
-						db.OSClientType.UpdateValidityBasedOnOfferValidity(db.OSClient, hit.ID, updateString)
+						updatedStatusCode = db.OSClientType.UpdateValidityBasedOnOfferValidity(db.OSClient, hit.ID, updateString)
 					}
 				}
 
@@ -165,6 +166,10 @@ func (db *DbManagerImpl) ManageEntries(prop *properties.Properties, response cha
 			log.Println(err)
 		}
 		log.Println(statusCode, ": Status code for deleted entries")
+	}
+
+	if len(keysTobeDeleted) == 0 && updatedStatusCode == 0 {
+		log.Println("Empty database")
 	}
 
 	response <- "Managed entries in Database"
@@ -185,7 +190,7 @@ func checkForValidKeyBasedOnCurrentTime(t time.Time, y time.Duration) bool {
 	timeNow := time.Now().UTC()
 
 	b := x.After(timeNow)
-	fmt.Println(b)
+	log.Println(b)
 
 	return b
 }
@@ -198,56 +203,60 @@ func (cache *CacheManagerImpl) ManageEntries(prop *properties.Properties, respon
 	var ce *models.CacheEntry
 	keys := cache.ClientType.GetAllKeys(cache.Client)
 
-	for _, key := range keys {
-		//var fResult  *models.Result
-		if checkIfKeyHasPastDeptDate(key) {
-			keysToBeDeleted = append(keysToBeDeleted, key)
-		} else {
-			cacheEntry, err := cache.ClientType.Query(key, cache.Client)
-
-			if err != nil {
-				log.Println(err.Error())
+	if len(keys) == 0 {
+		log.Println("No keys to Manage in Cache")
+	} else {
+		for _, key := range keys {
+			//var fResult  *models.Result
+			if checkIfKeyHasPastDeptDate(key) {
+				keysToBeDeleted = append(keysToBeDeleted, key)
 			} else {
-				res, err := loadResultFromCache(cacheEntry.Value)
+				cacheEntry, err := cache.ClientType.Query(key, cache.Client)
 
 				if err != nil {
 					log.Println(err.Error())
 				} else {
-					_, err := checkIfKeyIsValidBasedOnOfferValidity(&key, &res.Combinations, prop, "redis")
-
-					var finalRes *models.Result
-
-					finalRes = &models.Result{
-						Routes:           res.Routes,
-						Segments:         res.Segments,
-						Combinations:     res.Combinations,
-						Ancillaries:      res.Ancillaries,
-						AdditionalParams: res.AdditionalParams,
-					}
-					resInBytes, err := json.Marshal(&finalRes)
-
-					ce = &models.CacheEntry{
-						Key:   cacheEntry.Key,
-						Value: string(resInBytes),
-					}
-
-					err = cache.ClientType.AddEntry(ce, cache.Client, 0)
+					res, err := loadResultFromCache(cacheEntry.Value)
 
 					if err != nil {
 						log.Println(err.Error())
+					} else {
+						_, err := checkIfKeyIsValidBasedOnOfferValidity(&key, &res.Combinations, prop, "redis")
+
+						var finalRes *models.Result
+
+						finalRes = &models.Result{
+							Routes:           res.Routes,
+							Segments:         res.Segments,
+							Combinations:     res.Combinations,
+							Ancillaries:      res.Ancillaries,
+							AdditionalParams: res.AdditionalParams,
+						}
+						resInBytes, err := json.Marshal(&finalRes)
+
+						ce = &models.CacheEntry{
+							Key:   cacheEntry.Key,
+							Value: string(resInBytes),
+						}
+
+						err = cache.ClientType.AddEntry(ce, cache.Client, 0)
+
+						if err != nil {
+							log.Println(err.Error())
+						}
 					}
+
 				}
 
 			}
 
+			//call redis to update the key
+
 		}
-
-		//call redis to update the key
-
 	}
 
 	r := cache.ClientType.LifeCycleManager(keysToBeDeleted, cache.Client)
-	fmt.Println(r)
+	log.Println(r)
 	response <- "Managed entries in Cache"
 	resError <- err
 }
@@ -286,7 +295,7 @@ func checkIfKeyHasPastDeptDate(key string) bool {
 
 func deletionBasedOnDepDate(keys []string) ([]string, error) {
 
-	fmt.Println("Deletion of Keys based on Departure Date")
+	log.Println("Deletion of Keys based on Departure Date")
 
 	var (
 		keysToBeDeleted []string
@@ -299,7 +308,7 @@ func deletionBasedOnDepDate(keys []string) ([]string, error) {
 		re := regexp.MustCompile("[0-9]+")
 		reStringArray := re.FindAllString(j, 3)
 		if len(reStringArray) < 3 {
-			fmt.Println("deleted", "key:", j)
+			log.Println("deleted", "key:", j)
 			keysToBeDeleted = append(keysToBeDeleted, j)
 		} else {
 
@@ -312,9 +321,9 @@ func deletionBasedOnDepDate(keys []string) ([]string, error) {
 
 				compare := dt.Before(x)
 				if compare {
-					fmt.Println("Date is after today's date, so no deletion for key: ", j)
+					log.Println("Date is after today's date, so no deletion for key: ", j)
 				} else {
-					fmt.Println("deleted", "key:", j)
+					log.Println("deleted", "key:", j)
 					keysToBeDeleted = append(keysToBeDeleted, j)
 				}
 			}
